@@ -24,7 +24,8 @@
   .tg button.on{background:var(--ink);color:#fff}
   #tgState{top:10px;left:10px}
   #tgView{top:10px;right:10px}
-  #spots{bottom:10px;left:50%;transform:translateX(-50%);display:none}
+  #spots{bottom:10px;left:10px;right:10px;display:none;overflow-x:auto;justify-content:flex-start}
+  #spots button{flex:0 0 auto}
   #sheet{position:absolute;left:10px;right:10px;bottom:10px;max-height:58%;overflow:auto;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px;box-shadow:0 6px 24px rgba(0,0,0,.12);display:none}
   #sheet .t{font-weight:700;font-size:15px}
   #sheet .p{color:var(--wal);font-weight:700}
@@ -55,14 +56,14 @@
 <body>
 <header>
   <h1>우리 집, 호텔 방처럼</h1>
-  <p class="sub">11/24 영상으로 그린 큰 방 · 치수는 추정(줄자 전) · $1,000 A안 + 화장실</p>
+  <p class="sub">11/24 영상으로 그린 집 전체(큰 방·주방·복도·옷장·화장실) · 치수는 추정 · $1,000 A안 + 화장실</p>
 </header>
 <div id="stage">
   <canvas id="c"></canvas>
   <div id="labels"></div>
   <div class="tg" id="tgState"><button data-v="now">지금</button><button data-v="after" class="on">바꾼 뒤</button></div>
   <div class="tg" id="tgView"><button data-v="iso" class="on">위에서</button><button data-v="walk">걸어 보기</button></div>
-  <div class="tg" id="spots"><button data-v="0" class="on">입구</button><button data-v="1">책상</button><button data-v="2">소파</button><button data-v="3">침대</button></div>
+  <div class="tg" id="spots"><button data-v="0" class="on">입구</button><button data-v="1">책상</button><button data-v="2">소파</button><button data-v="3">침대</button><button data-v="4">주방</button><button data-v="5">복도</button><button data-v="6">화장실</button></div>
   <div id="sheet"><button class="x" aria-label="닫기">×</button><div id="sheetBody"></div></div>
 </div>
 <p class="hint">끌어서 돌리기 · 두 손가락으로 확대 · 물건을 누르면 가격과 이유가 나와요</p>
@@ -79,15 +80,21 @@
 
 <section>
   <h2>치수에 대해</h2>
-  <p class="muted">방 크기는 영상 속 가구(IKEA LACK 커피테이블 35⅜″, 퀸 침대 64″ 등)를 기준으로 잰 추정이에요. 긴 쪽 약 19ft, 짧은 쪽 약 16.5ft로 잡았고 1~2ft 틀릴 수 있어요. 줄자로 두 숫자만 주시면 모델과 목록을 그 숫자로 다시 맞춰요. 사기 전에는 그 자리를 꼭 줄자로 재 주세요.</p>
+  <p class="muted">큰 방 짧은 쪽(침대 벽)은 IKEA 공식 치수로 더해서 약 17ft예요: 통로 입구 약 2.6ft + 그릴 벽 + SLATTUM 퀸 61⅜″ + 협탁 + KLIPPAN 70⅞″. 긴 쪽 약 19ft와 주방·복도·화장실 크기·위치는 영상 순서로 짐작한 추정이에요(1~2ft 틀릴 수 있음). 위치가 다른 곳은 말로만 알려 주셔도 고쳐요. 사기 전에는 그 자리를 꼭 줄자로 재 주세요.</p>
 </section>
 
 <script type="module">
 import * as THREE from 'three';
 import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
 
-const L = 19, W = 16.5, H = 8;           // feet, estimated
-const IN = 1/12;
+// ---------- plan (feet, estimated) ----------
+// main room x 0..19, z 0..17 (z=0 desk wall, z=17 window wall, x=19 bed wall)
+const L = 19, W = 17, H = 8, T = 0.35;
+const XB = L + T;              // inner face of back wall (rooms behind)
+const XE = 23.85;              // vestibule/hall east wall
+const GZ0 = -2, GZ1 = 5.2;      // kitchen z range
+const BX1 = 29.7, BZ0 = 5.55, BZ1 = 11.0; // bath
+const KX1 = 33;                // kitchen end wall
 const canvas = document.getElementById('c');
 const stage = document.getElementById('stage');
 const labelsEl = document.getElementById('labels');
@@ -101,316 +108,334 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color('#e9e2d6');
-const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 300);
+const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 400);
 const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true;
 
 let STATE = 'after', VIEW = 'iso';
-const clickables = [];
-const labeled = [];
-const walls = [];
+const BATH_WALK_ONLY = new Set(['샤워 커튼 약 $35','펌프통 $45','흰 수건 $42','트레이 $14']);
+const clickables = [], labeled = [];
 
 // ---------- helpers ----------
 function mat(color, o={}) { return new THREE.MeshStandardMaterial({color, roughness:o.r ?? 0.8, metalness:o.m ?? 0, emissive:o.e ?? 0x000000, emissiveIntensity:o.ei ?? 0, transparent:o.t ?? false, opacity:o.op ?? 1, side:o.side ?? THREE.FrontSide, map:o.map ?? null}); }
 function box(parent, x0,x1,y0,y1,z0,z1, material, cast=true) {
-  const g = new THREE.BoxGeometry(Math.abs(x1-x0), Math.abs(y1-y0), Math.abs(z1-z0));
-  const m = new THREE.Mesh(g, material);
+  const m = new THREE.Mesh(new THREE.BoxGeometry(Math.abs(x1-x0), Math.abs(y1-y0), Math.abs(z1-z0)), material);
   m.position.set((x0+x1)/2, (y0+y1)/2, (z0+z1)/2);
-  m.castShadow = cast; m.receiveShadow = true;
-  parent.add(m); return m;
+  m.castShadow = cast; m.receiveShadow = true; parent.add(m); return m;
 }
 function cyl(parent, x,y,z, rt,rb,h, material, seg=20) {
   const m = new THREE.Mesh(new THREE.CylinderGeometry(rt,rb,h,seg), material);
   m.position.set(x,y,z); m.castShadow = true; m.receiveShadow = true; parent.add(m); return m;
 }
-function item(info, when='both') {
-  const g = new THREE.Group();
-  g.userData = {info, when};
-  scene.add(g);
-  if (info) clickables.push(g);
-  return g;
+function item(info, when='both', parent=scene) {
+  const g = new THREE.Group(); g.userData = {info, when}; parent.add(g);
+  if (info) clickables.push(g); return g;
 }
-function addLabel(group, text, pos, cls='') {
-  const el = document.createElement('div');
-  el.className = 'lb ' + cls; el.textContent = text;
-  labelsEl.appendChild(el);
-  labeled.push({group, el, pos: new THREE.Vector3(...pos)});
+function addLabel(group, text, pos, cls='', mode='all') {
+  if (BATH_WALK_ONLY.has(text)) mode = 'walk';
+  const el = document.createElement('div'); el.className = 'lb ' + cls; el.textContent = text; labelsEl.appendChild(el);
+  labeled.push({group, el, pos: new THREE.Vector3(...pos), mode});
 }
 function canvasTex(w,h,draw,rep=[1,1]) {
-  const c = document.createElement('canvas'); c.width=w; c.height=h;
-  draw(c.getContext('2d'), w, h);
+  const c = document.createElement('canvas'); c.width=w; c.height=h; draw(c.getContext('2d'), w, h);
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
-  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(...rep); t.anisotropy = 4;
-  return t;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(...rep); t.anisotropy = 4; return t;
 }
 function rnd(seed){ let s=seed; return ()=> (s = (s*16807)%2147483647)/2147483647; }
 
 // ---------- materials ----------
-const floorTex = canvasTex(1024,1024,(c,w,h)=>{
+function plankTex(rx, rz) { return canvasTex(1024,1024,(c,w,h)=>{
   const r = rnd(7); const n = 14; const ph = h/n;
-  for (let i=0;i<n;i++){
-    let x = -r()*w*0.6;
-    while (x < w) {
-      const len = w*(0.45+r()*0.35);
-      const l = 70 + r()*8;
-      c.fillStyle = `hsl(33,${42+r()*8}%,${l}%)`; c.fillRect(x, i*ph, len, ph);
+  for (let i=0;i<n;i++){ let x = -r()*w*0.6;
+    while (x < w) { const len = w*(0.45+r()*0.35);
+      c.fillStyle = `hsl(33,${42+r()*8}%,${70+r()*8}%)`; c.fillRect(x, i*ph, len, ph);
       c.strokeStyle='rgba(120,85,50,.25)'; c.lineWidth=2; c.strokeRect(x, i*ph, len, ph);
       for (let k=0;k<6;k++){ c.strokeStyle=`rgba(140,100,60,${0.05+r()*0.06})`; c.beginPath(); const yy=i*ph+r()*ph; c.moveTo(x,yy); c.bezierCurveTo(x+len*0.3,yy+3,x+len*0.6,yy-3,x+len,yy+1); c.stroke(); }
-      x += len;
-    }
-  }
-}, [L/8, W/8]);
+      x += len; } }
+}, [rx/8, rz/8]); }
 const M = {
-  wall: mat('#f3eee6', {r:0.95}),
-  trim: mat('#ffffff', {r:0.6}),
-  floor: mat('#ffffff', {map:floorTex, r:0.7}),
-  black: mat('#1f1c1a', {r:0.6}),
-  blackBrown: mat('#2e2621', {r:0.55}),
-  darkGray: mat('#3a3c40', {r:0.9}),
-  sofa: mat('#62666b', {r:0.95}),
-  white: mat('#f7f6f2', {r:0.7}),
-  mattress: mat('#f1efe9', {r:0.9}),
-  cream: mat('#efe4cf', {r:0.8}),
-  linen: mat('#f4ecdc', {r:0.95, e:0x000000}),
-  walnut: mat('#5b3b26', {r:0.55}),
-  beech: mat('#d9b98c', {r:0.6}),
-  gold: mat('#c9a256', {r:0.3, m:0.8}),
-  glass: mat('#cfe2ee', {t:true, op:0.35, r:0.1}),
-  blind: mat('#f6f4ef', {r:0.8}),
-  greenGray: mat('#7d8a78', {r:0.95}),
-  teal: mat('#40565a', {r:0.8}),
-  kraft: mat('#b89468', {r:0.9}),
-  blue: mat('#2f5fae', {r:0.8}),
+  wall: mat('#f3eee6', {r:0.95}), trim: mat('#ffffff', {r:0.6}),
+  black: mat('#1f1c1a', {r:0.6}), blackBrown: mat('#2e2621', {r:0.55}), darkGray: mat('#3a3c40', {r:0.9}),
+  sofa: mat('#62666b', {r:0.95}), white: mat('#f7f6f2', {r:0.7}), mattress: mat('#f1efe9', {r:0.9}),
+  cream: mat('#efe4cf', {r:0.8}), walnut: mat('#5b3b26', {r:0.55}), beech: mat('#d9b98c', {r:0.6}),
+  gold: mat('#c9a256', {r:0.3, m:0.8}), steel: mat('#b8bcc0', {r:0.35, m:0.7}),
+  glass: mat('#cfe2ee', {t:true, op:0.35, r:0.1}), blind: mat('#f6f4ef', {r:0.8}),
+  greenGray: mat('#7d8a78', {r:0.95}), teal: mat('#40565a', {r:0.8}), kraft: mat('#b89468', {r:0.9}), blue: mat('#2f5fae', {r:0.8}),
+  marble: mat('#f4f2ee', {r:0.35}), cabinet: mat('#fbfbf9', {r:0.6}), mirror: mat('#cfd9df', {r:0.15, m:0.15}),
+  pinkWall: mat('#f1dcd2', {r:0.95}),
 };
-const leafTex = canvasTex(512,512,(c,w,h)=>{
-  c.fillStyle='#eae6d8'; c.fillRect(0,0,w,h); const r=rnd(3);
-  for (let i=0;i<46;i++){ c.save(); c.translate(r()*w, r()*h); c.rotate(r()*Math.PI); c.fillStyle = r()<0.55 ? '#2f3b2c' : '#b9bda5'; c.beginPath(); c.ellipse(0,0,24+r()*30,12+r()*12,0,0,Math.PI*2); c.fill(); c.restore(); }
-}, [2,2]);
+const tileTex = canvasTex(256,256,(c,w,h)=>{ c.fillStyle='#d9d6d0'; c.fillRect(0,0,w,h); const r=rnd(11); for(let i=0;i<900;i++){ c.fillStyle=['#8d8a85','#5f5c58','#f4f2ee','#b3aea6'][i%4]; c.fillRect(r()*w,r()*h,2+r()*3,2+r()*3);} }, [3,2]);
+M.tile = mat('#ffffff', {map:tileTex, r:0.6});
+const leafTex = canvasTex(512,512,(c,w,h)=>{ c.fillStyle='#eae6d8'; c.fillRect(0,0,w,h); const r=rnd(3);
+  for (let i=0;i<46;i++){ c.save(); c.translate(r()*w, r()*h); c.rotate(r()*Math.PI); c.fillStyle = r()<0.55 ? '#2f3b2c' : '#b9bda5'; c.beginPath(); c.ellipse(0,0,24+r()*30,12+r()*12,0,0,Math.PI*2); c.fill(); c.restore(); } }, [2,2]);
 M.duvetNow = mat('#ffffff', {map:leafTex, r:0.95});
 M.duvetAfter = mat('#fbfaf7', {r:0.95});
 
-// ---------- room ----------
-const floor = new THREE.Mesh(new THREE.PlaneGeometry(L, W), M.floor);
-floor.rotation.x = -Math.PI/2; floor.position.set(L/2, 0, W/2); floor.receiveShadow = true; scene.add(floor);
-// corridor stub beyond far-wall opening
-const corrWalls = new THREE.Group(); scene.add(corrWalls);
-box(corrWalls, L+3.4, L+3.6, 0, H, 0, 2.5, mat('#d9d1c4'), false);
-box(corrWalls, L+0.35, L+3.5, 0, H, -0.2, 0, mat('#e6dfd3'), false);
-box(corrWalls, L+0.35, L+3.5, 0, H, 2.5, 2.7, mat('#e6dfd3'), false);
-const corr = new THREE.Mesh(new THREE.PlaneGeometry(3.5, 2.5), M.floor); corr.rotation.x=-Math.PI/2; corr.position.set(L+1.75,0,1.25); scene.add(corr);
-
-const T = 0.35;
-function wall(name, inward, center, parts) {
-  const g = new THREE.Group(); g.name = name; scene.add(g);
-  const m = M.wall.clone();
-  parts.forEach(p => box(g, ...p, m, false));
-  walls.push({g, m, inward: new THREE.Vector3(...inward), center: new THREE.Vector3(...center)});
-  return g;
+// ---------- floors ----------
+function floorRect(x0,x1,z0,z1, m) {
+  const f = new THREE.Mesh(new THREE.PlaneGeometry(x1-x0, z1-z0), m || mat('#ffffff', {map:plankTex(x1-x0, z1-z0), r:0.7}));
+  f.rotation.x = -Math.PI/2; f.position.set((x0+x1)/2, 0, (z0+z1)/2); f.receiveShadow = true; scene.add(f); return f;
 }
-// desk wall (z=0)
-wall('desk', [0,0,1], [L/2,4,0], [[-T, L+T, 0, H, -T, 0]]);
-// entry wall (x=0)
-wall('entry', [1,0,0], [0,4,W/2], [[-T, 0, 0, H, 0, W]]);
-// far wall (x=L) with corridor opening z 0..2.5
-wall('far', [-1,0,0], [L,4,W/2], [[L, L+T, 6.8, H, 0, 2.5],[L, L+T, 0, H, 2.5, W]]);
-// window wall (z=W): front door x 1.5..4.5, window x 8..15.5 (sill 2.6, top 7)
-wall('window', [0,0,-1], [L/2,4,W], [
-  [-T,1.5,0,H,W,W+T],[1.5,4.5,6.8,H,W,W+T],[4.5,8,0,H,W,W+T],
-  [8,15.5,0,2.6,W,W+T],[8,15.5,7.0,H,W,W+T],[15.5,L+T,0,H,W,W+T]]);
-// trims / baseboards
-box(scene, 0.02, L, 0, 0.3, 0.02, 0.06, M.trim, false);
-box(scene, 0.02, 0.06, 0, 0.3, 0.02, W, M.trim, false);
-// window glass + blinds
-const glass = new THREE.Mesh(new THREE.PlaneGeometry(7.5, 4.4), M.glass); glass.position.set(11.75, 4.8, W+0.17); scene.add(glass);
-const blinds = new THREE.Group(); scene.add(blinds);
-for (let y=2.75; y<6.95; y+=0.2) box(blinds, 8.05, 15.45, y, y+0.035, W-0.1, W-0.02, M.blind, false);
-box(blinds, 8, 15.5, 6.85, 7.0, W-0.16, W-0.02, M.white, false);
-// front door
-const door = new THREE.Group(); scene.add(door);
-box(door, 1.55, 4.45, 0, 6.75, W-0.05, W+0.05, M.white, false);
-const knob = cyl(door, 4.1, 3.1, W-0.12, 0.08, 0.08, 0.12, M.gold); knob.rotation.x = Math.PI/2;
-// heater grille on far wall
-box(scene, L-0.05, L-0.01, 3.3, 6.2, 2.75, 3.25, mat('#e8e4dc'), false);
-// ceiling (walk view only) + fan
-const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(L, W), mat('#f6f2ea', {side:THREE.DoubleSide}));
-ceiling.rotation.x = Math.PI/2; ceiling.position.set(L/2, H, W/2); scene.add(ceiling);
-const fan = new THREE.Group(); scene.add(fan);
-cyl(fan, 9.5, H-0.4, 8.25, 0.06, 0.06, 0.8, M.darkGray);
-const fanLight = cyl(fan, 9.5, H-0.9, 8.25, 0.45, 0.35, 0.3, mat('#ffffff', {e:0xffffff, ei:0}));
-for (let i=0;i<5;i++){ const b = new THREE.Mesh(new THREE.BoxGeometry(2.0,0.04,0.45), M.darkGray); const a = i*Math.PI*2/5; b.position.set(9.5+Math.cos(a)*1.25, H-0.78, 8.25+Math.sin(a)*1.25); b.rotation.y = -a; fan.add(b); }
+floorRect(0, L, 0, W);
+floorRect(L, XE+T, GZ0, 11.0);       // vestibule + hall (incl. opening sill)
+floorRect(XE, KX1, GZ0, GZ1);         // kitchen
+floorRect(XE, BX1, BZ0, BZ1);         // bath
+floorRect(XB, XE, 11.0, 13.35);       // closet
 
-// ---------- furniture: kept ----------
-// shoe shelf (keep, decluttered after)
+// ---------- walls (iso view lowers them) ----------
+const wallsG = new THREE.Group(); scene.add(wallsG);
+// wall along x (constant z band z0..z1) from a0..a1 in x; holes [{a0,a1,y0,y1}]
+function wallSeg(axis, c0, c1, a0, a1, holes=[], material=M.wall) {
+  const cuts = [a0, a1]; holes.forEach(h => cuts.push(h.a0, h.a1));
+  const xs = [...new Set(cuts)].sort((p,q)=>p-q);
+  for (let i=0;i<xs.length-1;i++){
+    const s0 = xs[i], s1 = xs[i+1]; if (s1-s0 < 1e-6) continue;
+    const mid = (s0+s1)/2; const h = holes.find(hh => mid > hh.a0 && mid < hh.a1);
+    const spans = h ? [[0,h.y0],[h.y1,H]] : [[0,H]];
+    spans.forEach(([y0,y1]) => { if (y1-y0 < 1e-6) return;
+      if (axis === 'x') box(wallsG, s0, s1, y0, y1, c0, c1, material, false); else box(wallsG, c0, c1, y0, y1, s0, s1, material, false); });
+  }
+}
+// main room
+wallSeg('x', -T, 0, -T, L, []);                                                     // desk wall z=0
+wallSeg('z', -T, 0, 0, W, []);                                                      // entry wall x=0
+wallSeg('x', W, W+T, -T, L, [{a0:1.5,a1:4.5,y0:0,y1:6.8},{a0:8,a1:15.5,y0:2.6,y1:7.0}]); // window wall
+wallSeg('z', L, XB, GZ0-T, W+T, [{a0:0.2,a1:2.8,y0:0,y1:6.8}]);                     // bed wall with opening to vestibule
+// vestibule / hall
+wallSeg('x', GZ0-T, GZ0, L, KX1+T, []);                                             // south wall (whiteboard + kitchen left side)
+wallSeg('z', XE, XE+T, GZ0, 13.35, [{a0:-1.7,a1:3.3,y0:0,y1:6.8},{a0:8.3,a1:10.7,y0:0,y1:6.8}]); // hall east wall: kitchen opening, bath door
+wallSeg('x', 13.35, 13.35+T, L, XE+T, []);                                          // closet back
+// kitchen
+wallSeg('x', GZ1, BZ0, XE, KX1+T, []);                                              // kitchen north wall (sink side) / bath south
+wallSeg('z', KX1, KX1+T, GZ0, GZ1, [{a0:0.3,a1:3.1,y0:3.3,y1:6.4}]);               // kitchen end wall with window
+// bath
+wallSeg('z', BX1, BX1+T, BZ0, BZ1+T, [{a0:7.4,a1:9.2,y0:3.6,y1:6.3}], M.pinkWall);  // bath far wall with window
+wallSeg('x', BZ1, BZ1+T, XE, BX1+T, []);                                            // bath north wall
+// baseboards main
+box(wallsG, 0.02, L, 0, 0.3, 0.02, 0.06, M.trim, false);
+
+// windows / doors (wall-mounted, scaled with walls)
+const winG = new THREE.Group(); wallsG.add(winG);
+const glass = new THREE.Mesh(new THREE.PlaneGeometry(7.5, 4.4), M.glass); glass.position.set(11.75, 4.8, W+0.17); winG.add(glass);
+for (let y=2.75; y<6.95; y+=0.2) box(winG, 8.05, 15.45, y, y+0.035, W-0.1, W-0.02, M.blind, false);
+box(winG, 8, 15.5, 6.85, 7.0, W-0.16, W-0.02, M.white, false);
+box(winG, 1.55, 4.45, 0, 6.75, W-0.05, W+0.05, M.white, false);
+{ const k = cyl(winG, 4.1, 3.1, W-0.12, 0.08, 0.08, 0.12, M.gold); k.rotation.x = Math.PI/2; }
+box(winG, L-0.05, L-0.01, 3.3, 6.2, 3.0, 3.5, mat('#e8e4dc'), false);          // heater grille
+// kitchen window + wall AC
+const kg = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 3.1), M.glass); kg.rotation.y = -Math.PI/2; kg.position.set(KX1+0.17, 4.85, 1.7); winG.add(kg);
+for (let y=5.6; y<6.35; y+=0.12) box(winG, KX1-0.1, KX1-0.02, y, y+0.03, 0.35, 3.05, M.blind, false);
+box(winG, KX1-0.9, KX1, 1.7, 3.1, 0.7, 2.7, mat('#eeeeea'));                   // wall AC
+// bath window
+const bg = new THREE.Mesh(new THREE.PlaneGeometry(1.8, 2.7), mat('#3b4a46', {r:0.2})); bg.rotation.y = -Math.PI/2; bg.position.set(BX1+0.17, 4.95, 8.3); winG.add(bg);
+// whiteboard on vestibule south wall
+const wb = item({name:'화이트보드 (지금 것)', tag:'keep', price:'지금 것', why:'그대로 둬요. 아래 바닥의 상자, 물, 운동 밴드만 치워요.'}, 'both', wallsG);
+box(wb, 19.9, 22.9, 3.3, 5.3, GZ0+0.01, GZ0+0.08, M.white); box(wb, 19.85, 22.95, 3.25, 3.3, GZ0, GZ0+0.12, M.steel);
+
+// ---------- MAIN ROOM furniture ----------
 const shelf = item({name:'신발 선반', tag:'keep', price:'지금 것', why:'그대로 둬요. 세제, 가방, 택배 상자를 치우고 신발만 가지런히 두면 입구가 호텔 복도처럼 비어 보여요. 돈이 안 드는 0단계예요.'});
-[[1.2,1.25],[3.15,1.25]].forEach(([x])=>{ [0.05,1.05].forEach(z=> box(shelf, x, x+0.05, 0, 5.2, z, z+0.05, M.white)); });
+[1.2,3.15].forEach(x=>{ [0.05,1.05].forEach(z=> box(shelf, x, x+0.05, 0, 5.2, z, z+0.05, M.white)); });
 [0.4,1.4,2.4,3.4,4.4].forEach(y=> box(shelf, 1.2, 3.2, y, y+0.05, 0.05, 1.1, M.white));
 const shoeCols = ['#ddd','#8a6a50','#444','#c9c2b4','#5d6b7a','#eee'];
 for (let i=0;i<10;i++){ const y=[0.45,1.45,2.45][i%3]; box(shelf, 1.3+(i%4)*0.45, 1.65+(i%4)*0.45, y, y+0.3, 0.2, 0.95, mat(shoeCols[i%6])); }
-// clutter on shelf (now only)
 const shelfJunk = item(null,'now');
 box(shelfJunk, 1.3, 2.0, 3.45, 4.3, 0.2, 0.8, mat('#f2f2f2')); box(shelfJunk, 2.1, 2.9, 4.45, 5.0, 0.2, 0.9, mat('#d8b8b0'));
-// cream floor lamp (keep)
 const flamp = item({name:'크림색 플로어 스탠드', tag:'keep', price:'지금 것', why:'그대로 둬요. 지금은 신발 선반을 비추는 자리라 2700K 전구로만 바꿔요.'});
-cyl(flamp, 0.7, 0.03, 0.7, 0.45, 0.45, 0.06, M.cream); cyl(flamp, 0.7, 2.6, 0.7, 0.04, 0.04, 5.2, M.cream);
-const dome = cyl(flamp, 0.95, 5.0, 0.85, 0.2, 0.45, 0.55, M.cream);
-// desk chair (Aeron, keep)
+cyl(flamp, 0.7, 0.03, 0.7, 0.45, 0.45, 0.06, M.cream); cyl(flamp, 0.7, 2.6, 0.7, 0.04, 0.04, 5.2, M.cream); cyl(flamp, 0.95, 5.0, 0.85, 0.2, 0.45, 0.55, M.cream);
 const chair = item({name:'의자 (지금 것)', tag:'keep', price:'지금 것', why:'사장님이 지금 의자를 그대로 쓰기로 했어요. 새 책상 높이를 이 의자에 맞춰요.'});
 cyl(chair, 6.6, 0.25, 2.7, 0.05, 0.05, 0.4, M.black);
-for (let i=0;i<5;i++){ const a=i*Math.PI*2/5; box(chair, 6.6+Math.cos(a)*0.0, 6.6+Math.cos(a)*1.0, 0.1, 0.18, 2.7, 2.7+Math.sin(a)*1.0+0.06, M.black); }
+for (let i=0;i<5;i++){ const a=i*Math.PI*2/5; const leg = box(chair, 0,1.0,0.1,0.18,0,0.12, M.black); leg.geometry.translate(0.5,0,0); leg.position.set(6.6,0.14,2.7); leg.rotation.y = a; }
 cyl(chair, 6.6, 1.0, 2.7, 0.06, 0.06, 1.2, M.black);
-box(chair, 6.0, 7.2, 1.6, 1.8, 2.3, 3.4, M.black);
-box(chair, 6.0, 7.2, 1.8, 3.5, 3.35, 3.5, mat('#2a2a2a',{r:0.9}));
-// wooden chair (keep)
+box(chair, 6.0, 7.2, 1.6, 1.8, 2.3, 3.4, M.black); box(chair, 6.0, 7.2, 1.8, 3.5, 3.35, 3.5, mat('#2a2a2a',{r:0.9}));
 const wchair = item({name:'나무 의자 (지금 것)', tag:'keep', price:'지금 것', why:'그대로 둬요.'});
 box(wchair, 4.2, 5.6, 1.45, 1.6, 2.1, 3.4, M.black);
 [[4.25,2.15],[5.5,2.15],[4.25,3.3],[5.5,3.3]].forEach(([x,z])=>box(wchair,x,x+0.08,0,1.45,z,z+0.08,M.black));
 box(wchair, 4.2, 5.6, 1.6, 3.6, 3.3, 3.4, M.black);
-// bed (keep frame)
-const bed = item({name:'침대 프레임 (지금 것)', tag:'keep', price:'지금 것', why:'프레임은 그대로 두고 침구만 흰색으로 바꿔요. 퀸(64″×84″)으로 보고 그렸어요.'});
-const bx0 = L-7.0, bz0 = 3.4, bz1 = bz0 + 64*IN*12/12*1; // 64"
-const bz1b = bz0 + 5.33;
-box(bed, bx0, L-0.25, 0, 1.0, bz0, bz1b, M.darkGray);
-box(bed, L-0.3, L-0.05, 0, 3.3, bz0-0.05, bz1b+0.05, M.darkGray);
-box(bed, bx0+0.1, L-0.35, 1.0, 1.75, bz0+0.1, bz1b-0.1, M.mattress);
-box(bed, L-1.5, L-0.45, 1.75, 2.1, bz0+0.35, bz0+2.5, M.white); box(bed, L-1.5, L-0.45, 1.75, 2.1, bz0+2.8, bz1b-0.35, M.white);
-const duvetNow = item(null,'now'); box(duvetNow, bx0-0.05, L-1.7, 1.75, 1.95, bz0-0.15, bz1b+0.15, M.duvetNow);
-// nightstand (keep)
+// SLATTUM queen: 81 7/8 x 61 3/8, headboard 33 1/2, footboard 15 3/4
+const BL = 81.875/12, BW = 61.375/12;
+const bz0 = 3.7, bz1 = bz0 + BW, bx0 = L - BL;
+const bed = item({name:'SLATTUM 침대 프레임, 퀸 (지금 것)', tag:'keep', price:'지금 것', size:'81⅞″×61⅜″, 머리판 33½″', why:'IKEA SLATTUM 퀸으로 보고 공식 치수로 그렸어요. 프레임은 그대로 두고 침구만 흰색으로 바꿔요.'});
+box(bed, bx0, L-0.25, 0.35, 0.9, bz0, bz1, M.darkGray);
+box(bed, L-0.28, L-0.03, 0, 33.5/12, bz0, bz1, M.darkGray);
+box(bed, bx0, bx0+0.2, 0, 15.75/12, bz0, bz1, M.darkGray);
+box(bed, bx0+0.2, L-0.3, 0.9, 1.6, bz0+0.08, bz1-0.08, M.mattress);
+box(bed, L-1.4, L-0.4, 1.6, 1.95, bz0+0.3, bz0+2.4, M.white); box(bed, L-1.4, L-0.4, 1.6, 1.95, bz0+2.7, bz1-0.3, M.white);
+const duvetNow = item(null,'now'); box(duvetNow, bx0+0.15, L-1.6, 1.6, 1.8, bz0-0.12, bz1+0.12, M.duvetNow);
 const ns = item({name:'흰 협탁 (지금 것)', tag:'keep', price:'지금 것', why:'그대로 두고 위에 HALGATT 램프를 올려요.'});
-box(ns, L-1.4, L-0.05, 0, 2.0, bz1b+0.2, bz1b+1.55, M.white);
-box(ns, L-1.42, L-1.38, 0.9, 0.95, bz1b+0.25, bz1b+1.5, mat('#ddd'));
-// sofa (keep)
-const sofa = item({name:'회색 소파 (지금 것)', tag:'keep', price:'지금 것', why:'그대로 둬요. 70″짜리 2인용으로 보고 그렸어요. 옆에 플로어 램프를 하나 더해요.'});
-const sz0 = bz1b+1.75, sz1 = W-0.4;
-box(sofa, L-2.9, L-0.05, 0.3, 1.45, sz0, sz1, M.sofa);
-box(sofa, L-0.85, L-0.05, 1.45, 2.65, sz0, sz1, M.sofa);
-box(sofa, L-2.9, L-0.05, 1.45, 2.05, sz0, sz0+0.55, M.sofa); box(sofa, L-2.9, L-0.05, 1.45, 2.05, sz1-0.55, sz1, M.sofa);
-[[L-2.8,sz0+0.1],[L-2.8,sz1-0.2],[L-0.3,sz0+0.1],[L-0.3,sz1-0.2]].forEach(([x,z])=>box(sofa,x,x+0.1,0,0.3,z,z+0.1,M.black));
-// coffee table LACK (keep)
-const ct = item({name:'LACK 커피테이블 (지금 것)', tag:'keep', price:'지금 것', why:'그대로 두고 위를 비워요. 책 몇 권과 꽃 하나만 남겨요. 35⅜″×21⅝″라서 방 크기를 잴 때 기준으로 썼어요.'});
-const ctx0 = L-2.9-1.4-1.8, ctz0 = (sz0+sz1)/2 - 1.475;
-box(ct, ctx0, ctx0+1.8, 1.33, 1.5, ctz0, ctz0+2.95, M.blackBrown);
-box(ct, ctx0+0.1, ctx0+1.7, 0.5, 0.58, ctz0+0.1, ctz0+2.85, M.blackBrown);
-[[0,0],[1.6,0],[0,2.75],[1.6,2.75]].forEach(([dx,dz])=>box(ct, ctx0+dx, ctx0+dx+0.2, 0, 1.33, ctz0+dz, ctz0+dz+0.2, M.blackBrown));
+const nz0 = bz1 + 0.2, nz1 = nz0 + 1.3;
+box(ns, L-1.35, L-0.05, 0, 2.0, nz0, nz1, M.white);
+// KLIPPAN loveseat 70 7/8 x 34 5/8 x 26
+const SW = 70.875/12, SD = 34.625/12;
+const sz1 = W - 0.1, sz0 = sz1 - SW;
+const sofa = item({name:'KLIPPAN 2인 소파 (지금 것)', tag:'keep', price:'지금 것', size:'70⅞″×34⅝″×26″', why:'IKEA KLIPPAN으로 보고 공식 치수로 그렸어요. 그대로 두고 옆에 플로어 램프를 하나 더해요.'});
+box(sofa, L-SD, L-0.05, 0.25, 1.4, sz0, sz1, M.sofa);
+box(sofa, L-0.75, L-0.05, 1.4, 26/12, sz0, sz1, M.sofa);
+box(sofa, L-SD, L-0.05, 1.4, 26/12, sz0, sz0+0.55, M.sofa); box(sofa, L-SD, L-0.05, 1.4, 26/12, sz1-0.55, sz1, M.sofa);
+// LACK coffee table 35 3/8 x 21 5/8 x 17 3/4
+const CTL = 35.375/12, CTD = 21.625/12;
+const ctx1 = L - SD - 1.4, ctx0 = ctx1 - CTD, ctz0 = (sz0+sz1)/2 - CTL/2;
+const ct = item({name:'LACK 커피테이블 (지금 것)', tag:'keep', price:'지금 것', size:'35⅜″×21⅝″', why:'그대로 두고 위를 비워요. 책 몇 권과 꽃 하나만 남겨요.'});
+box(ct, ctx0, ctx1, 1.33, 1.48, ctz0, ctz0+CTL, M.blackBrown); box(ct, ctx0+0.1, ctx1-0.1, 0.5, 0.58, ctz0+0.1, ctz0+CTL-0.1, M.blackBrown);
+[[0,0],[CTD-0.2,0],[0,CTL-0.2],[CTD-0.2,CTL-0.2]].forEach(([dx,dz])=>box(ct, ctx0+dx, ctx0+dx+0.2, 0, 1.33, ctz0+dz, ctz0+dz+0.2, M.blackBrown));
 const ctJunk = item(null,'now');
-for (let i=0;i<7;i++) box(ctJunk, ctx0+0.2+(i%3)*0.45, ctx0+0.55+(i%3)*0.45, 1.5, 1.5+0.25+(i%2)*0.5, ctz0+0.3+i*0.33, ctz0+0.55+i*0.33, mat(['#c9b79c','#f0f0f0','#8b6c4c','#e8d6d0'][i%4]));
+for (let i=0;i<7;i++) box(ctJunk, ctx0+0.15+(i%2)*0.7, ctx0+0.6+(i%2)*0.7, 1.48, 1.48+0.25+(i%2)*0.5, ctz0+0.2+i*0.38, ctz0+0.45+i*0.38, mat(['#c9b79c','#f0f0f0','#8b6c4c','#e8d6d0'][i%4]));
 const ctNeat = item(null,'after');
-box(ctNeat, ctx0+0.4, ctx0+1.3, 1.5, 1.68, ctz0+0.5, ctz0+1.3, mat('#d8cbb6'));
-cyl(ctNeat, ctx0+0.9, 1.75, ctz0+2.2, 0.12, 0.1, 0.5, M.white); cyl(ctNeat, ctx0+0.9, 2.1, ctz0+2.2, 0.25, 0.1, 0.3, mat('#f4f1e6'));
+box(ctNeat, ctx0+0.3, ctx0+1.2, 1.48, 1.66, ctz0+0.4, ctz0+1.2, mat('#d8cbb6'));
+cyl(ctNeat, ctx0+0.9, 1.73, ctz0+2.2, 0.12, 0.1, 0.5, M.white); cyl(ctNeat, ctx0+0.9, 2.08, ctz0+2.2, 0.25, 0.1, 0.3, mat('#f4f1e6'));
 
-// ---------- NOW only ----------
+// ---------- MAIN: now only ----------
 const oldDesk = item({name:'지금 책상', tag:'rm', price:'—', why:'약 48″ 짧은 책상이에요. 바꾼 뒤에는 200cm(78¾″) 긴 상판으로 바꿔요. 쓰던 책상은 중고로 팔거나 다른 자리에 써요.'}, 'now');
 box(oldDesk, 4.0, 8.0, 2.4, 2.5, 0.1, 2.1, M.black);
 [[4.05,0.15],[7.9,0.15],[4.05,2.0],[7.9,2.0]].forEach(([x,z])=>box(oldDesk,x,x+0.06,0,2.4,z,z+0.06,M.black));
-const monitorNow = item(null,'now');
-box(monitorNow, 5.2, 7.2, 3.2, 4.4, 0.35, 0.42, M.black); box(monitorNow, 6.15, 6.25, 2.5, 3.2, 0.4, 0.5, M.black);
-const junk = item({name:'바닥 물건 (상자, 가방, 쇼핑백)', tag:'rm', price:'$0', why:'0단계, 비우기예요. 전문가들이 공짜로 가장 효과가 크다고 꼽는 순서가 "빼기"예요. 상자와 가방을 옷장이나 카트로 옮겨요.'}, 'now');
-box(junk, 7.6, 9.0, 0, 0.35, 8.2, 9.3, M.teal); // open box on floor
-box(junk, 8.4, 9.6, 0, 1.3, 2.6, 3.4, M.black); // backpack
-box(junk, 0.3, 1.2, 0, 1.4, 1.5, 2.2, M.kraft); // amazon bag
-box(junk, 0.2, 0.9, 0, 1.6, 2.4, 3.3, M.blue); // blue bag
-box(junk, 3.6, 4.3, 0, 0.05, 1.3, 2.0, M.black); // mat
+box(oldDesk, 5.2, 7.2, 3.2, 4.4, 0.35, 0.42, M.black); box(oldDesk, 6.15, 6.25, 2.5, 3.2, 0.4, 0.5, M.black);
+const junk = item({name:'바닥 물건 (상자, 가방, 쇼핑백)', tag:'rm', price:'$0', why:'0단계, 비우기예요. 전문가들이 공짜로 가장 효과가 크다고 꼽는 순서가 "빼기"예요. 상자와 가방은 옷장이나 카트로 옮겨요.'}, 'now');
+box(junk, 7.6, 9.0, 0, 0.35, 8.2, 9.3, M.teal); box(junk, 8.4, 9.6, 0, 1.3, 2.6, 3.4, M.black);
+box(junk, 0.3, 1.2, 0, 1.4, 1.5, 2.2, M.kraft); box(junk, 0.2, 0.9, 0, 1.6, 2.4, 3.3, M.blue); box(junk, 3.6, 4.3, 0, 0.05, 1.3, 2.0, M.black);
 addLabel(junk, '치울 것', [8.3, 1.2, 8.7], 'rm');
-const fanOnNote = item(null,'now');
 
-// ---------- AFTER: new items ----------
+// ---------- MAIN: after (new) ----------
 const P = {};
-function newItem(key, info, labelText, labelPos) { const g = item(info, 'after'); P[key]=g; if (labelText) addLabel(g, labelText, labelPos, 'new'); return g; }
-
-// LAGKAPTEN long desk 78.75 x 23.625
-const desk = newItem('desk', {name:'LAGKAPTEN 상판 200cm 블랙브라운 + OLOV 높이조절 다리 4개', tag:'new', price:'$129.99', priceNote:'상판 $79.99 + 다리 $12.50×4', size:'78¾″×23⅝″, 높이 23⅝~35⅜″', step:'2단계', why:'어제 방처럼 길고 검은 책상이에요. 다리 높이를 사장님 팔꿈치 높이에 한 번 맞춰 두면 지금 의자로 인체공학 조건이 맞아요. 신발 선반 끝(약 3.3ft)부터 놓아도 벽에 여유가 있어요(추정).', url:'https://www.ikea.com/us/en/p/lagkapten-tabletop-black-brown-60487017/'}, '긴 책상 $130', [7.1, 3.2, 1.0]);
+function newItem(key, info, labelText, labelPos, parent=scene) { const g = item(info, 'after', parent); P[key]=g; if (labelText) addLabel(g, labelText, labelPos, 'new'); return g; }
+const desk = newItem('desk', {name:'LAGKAPTEN 상판 200cm 블랙브라운 + OLOV 높이조절 다리 4개', tag:'new', price:'$129.99', priceNote:'상판 $79.99 + 다리 $12.50×4', size:'78¾″×23⅝″, 높이 23⅝~35⅜″', step:'2단계', why:'어제 방처럼 길고 검은 책상이에요. 다리 높이를 사장님 팔꿈치 높이에 한 번 맞춰 두면 지금 의자로 인체공학 조건이 맞아요. 신발 선반 끝부터 놓아도 벽에 여유가 있어 보여요(추정).', url:'https://www.ikea.com/us/en/p/lagkapten-tabletop-black-brown-60487017/'}, '긴 책상 $130', [7.1, 3.2, 1.0]);
 box(desk, 3.6, 3.6+6.56, 2.38, 2.5, 0.08, 0.08+1.97, M.blackBrown);
 [[3.75,0.25],[3.6+6.56-0.25,0.25],[3.75,1.85],[3.6+6.56-0.25,1.85]].forEach(([x,z])=>cyl(desk, x, 1.19, z, 0.08, 0.08, 2.38, M.black));
-box(desk, 5.6, 7.6, 3.1, 4.3, 0.3, 0.37, M.black); box(desk, 6.55, 6.65, 2.5, 3.1, 0.35, 0.45, M.black);
-box(desk, 5.9, 7.3, 2.5, 2.55, 0.9, 1.4, mat('#333'));
-
-// HALGATT lamps x2
+box(desk, 5.6, 7.6, 3.1, 4.3, 0.3, 0.37, M.black); box(desk, 6.55, 6.65, 2.5, 3.1, 0.35, 0.45, M.black); box(desk, 5.9, 7.3, 2.5, 2.55, 0.9, 1.4, mat('#333'));
 function halgatt(g, x, y, z) {
   cyl(g, x, y+0.35, z, 0.18, 0.22, 0.7, M.white);
-  const shade = cyl(g, x, y+0.95, z, 0.32, 0.38, 0.5, mat('#f3e9d6', {e:0xffc98a, ei:0}), 28);
-  shade.userData.glow = true;
-  const pl = new THREE.PointLight(0xffb469, 0, 9, 1.6); pl.position.set(x, y+0.95, z); pl.castShadow = false; g.add(pl); pl.userData.warm = 4.0;
+  const shade = cyl(g, x, y+0.95, z, 0.32, 0.38, 0.5, mat('#f3e9d6', {e:0xffc98a}), 28); shade.userData.glow = true;
+  const pl = new THREE.PointLight(0xffb469, 0, 9, 1.6); pl.position.set(x, y+0.95, z); g.add(pl); pl.userData.warm = 4.0;
 }
-const lamps = newItem('lamps', {name:'HALGATT 테이블 램프 흰색 2개 (밝기 조절)', tag:'new', price:'$99.98', priceNote:'$49.99×2', size:'높이 14″', step:'1단계 조명', why:'천장등을 끄고 낮은 자리 따뜻한 빛을 여러 겹 두는 게 호텔 느낌의 핵심이에요. 침대 양옆에 하나씩 둬요.', url:'https://www.ikea.com/us/en/p/halgatt-table-lamp-dimmable-white-white-ceramic-40601274/'}, '램프 2개 $100', [L-0.7, 3.4, bz1b+0.9]);
-halgatt(lamps, L-0.7, 2.0, bz1b+0.88);
-halgatt(lamps, L-0.75, 1.75, bz0-0.95);
-
-// UGGLERUM side table (left of bed) -> flagged tight
-const ugg = newItem('ugg', {name:'UGGLERUM 협탁 (침대 왼쪽)', tag:'new', price:'$99.99', size:'18⅛″×15¾″', step:'4단계', why:'침대 왼쪽 램프를 올릴 자리예요. 주의: 이 모델에서는 침대 왼쪽이 주방 쪽 통로 입구와 붙어 있어서 자리가 빠듯해 보여요. 침대 왼쪽 벽 폭이 18″가 안 되면 벽에 붙이는 작은 선반($20 안팎)으로 바꾸는 게 맞아요.', url:'https://www.ikea.com/us/en/p/ugglerum-side-table-brown-00627983/'}, '협탁 $100 (자리 확인)', [L-0.75, 2.6, bz0-0.95]);
-cyl(ugg, L-0.75, 0.9, bz0-0.95, 0.62, 0.62, 0.08, M.walnut);
-box(ugg, L-1.45, L-0.05, 0, 1.75, bz0-1.65, bz0-1.57, M.walnut);
-cyl(ugg, L-0.75, 1.7, bz0-0.95, 0.65, 0.65, 0.08, M.walnut);
-cyl(ugg, L-0.75, 0.04, bz0-0.95, 0.62, 0.62, 0.08, M.walnut);
-
-// white bedding
-const bedding = newItem('bedding', {name:'흰 호텔 침구 (이불 속통 + ÄNGSLILJA 커버)', tag:'new', price:'$166.74', priceNote:'Marriott 이불 속통 $126.75(11/24 확인 할인가, 살 때 다시 확인) + ÄNGSLILJA 퀸 $39.99', size:'Full/Queen', step:'3단계 침구', why:'어제 방에서 좋았던 흰 침구예요. 지금 초록 무늬 이불을 흰색으로만 바꿔도 방 전체가 밝고 정돈돼 보여요.', url:'https://www.ikea.com/us/en/p/aengslilja-duvet-cover-and-pillowcase-s-white-00318541/'}, '흰 침구 $167', [bx0+2.5, 2.6, (bz0+bz1b)/2]);
-box(bedding, bx0-0.05, L-1.7, 1.75, 1.97, bz0-0.12, bz1b+0.12, M.duvetAfter);
-box(bedding, bx0-0.05, bx0+1.3, 1.97, 2.0, bz0-0.12, bz1b+0.12, mat('#e9e2d4'));
-
-// OKENSAND floor lamp by sofa
-const okl = newItem('okl', {name:'ÖKENSAND 플로어 램프', tag:'new', price:'$89.99', step:'1단계 조명', why:'소파 옆 낮은 빛이에요. 저녁엔 천장 팬 등을 끄고 이 램프와 침대 램프만 켜요.', url:'https://www.ikea.com/us/en/p/oekensand-floor-lamp-beech-white-90541536/'}, '플로어 램프 $90', [L-3.4, 5.6, W-0.8]);
-const ox = L-3.4, oz = W-0.75;
-[0,1,2].forEach(i=>{ const a=i*Math.PI*2/3; const leg = cyl(okl, ox+Math.cos(a)*0.35, 2.2, oz+Math.sin(a)*0.35, 0.04, 0.04, 4.5, M.beech); leg.rotation.z = Math.cos(a)*0.08; leg.rotation.x = -Math.sin(a)*0.08; });
-const okShade = cyl(okl, ox, 4.7, oz, 0.55, 0.7, 0.8, mat('#fbf6ec', {e:0xffc98a, ei:0}), 28); okShade.userData.glow = true;
-{ const pl = new THREE.PointLight(0xffb469, 0, 12, 1.6); pl.position.set(ox, 4.6, oz); okl.add(pl); pl.userData.warm = 5.0; }
-
-// DYTAG curtains
-function curtainPanel(g, x0, x1) {
-  const w = x1-x0, h = 7.45;
-  const geo = new THREE.PlaneGeometry(w, h, 40, 1);
-  const pos = geo.attributes.position;
+const lamps = newItem('lamps', {name:'HALGATT 테이블 램프 흰색 2개 (밝기 조절)', tag:'new', price:'$99.98', priceNote:'$49.99×2', size:'높이 14″', step:'1단계 조명', why:'천장등을 끄고 낮은 자리 따뜻한 빛을 여러 겹 두는 게 호텔 느낌의 핵심이에요. 침대 양옆에 하나씩 둬요.', url:'https://www.ikea.com/us/en/p/halgatt-table-lamp-dimmable-white-white-ceramic-40601274/'}, '램프 2개 $100', [L-0.7, 3.4, (nz0+nz1)/2]);
+halgatt(lamps, L-0.7, 2.0, (nz0+nz1)/2); halgatt(lamps, L-0.75, 1.75, bz0-0.75);
+const ugg = newItem('ugg', {name:'UGGLERUM 협탁 (침대 왼쪽)', tag:'new', price:'$99.99', size:'18⅛″×15¾″', step:'4단계', why:'침대 왼쪽 램프를 올릴 자리예요. 주의: 침대 왼쪽이 주방 쪽 통로 입구와 벽 난방 그릴에 붙어 있어서 자리가 빠듯해 보여요. 침대 왼쪽 벽 폭이 18″가 안 되면 벽에 붙이는 작은 선반($20 안팎)으로 바꾸는 게 맞아요.', url:'https://www.ikea.com/us/en/p/ugglerum-side-table-brown-00627983/'}, '협탁 $100 (자리 확인)', [L-0.75, 2.6, bz0-0.75]);
+cyl(ugg, L-0.75, 0.9, bz0-0.75, 0.62, 0.62, 0.08, M.walnut); cyl(ugg, L-0.75, 1.7, bz0-0.75, 0.65, 0.65, 0.08, M.walnut); cyl(ugg, L-0.75, 0.04, bz0-0.75, 0.62, 0.62, 0.08, M.walnut);
+box(ugg, L-1.4, L-0.1, 0, 1.75, bz0-1.4, bz0-1.32, M.walnut);
+const bedding = newItem('bedding', {name:'흰 호텔 침구 (이불 속통 + ÄNGSLILJA 커버)', tag:'new', price:'$166.74', priceNote:'Marriott 이불 속통 $126.75(11/24 확인 할인가, 살 때 다시 확인) + ÄNGSLILJA 퀸 $39.99', size:'Full/Queen', step:'3단계 침구', why:'어제 방에서 좋았던 흰 침구예요. 지금 초록 무늬 이불을 흰색으로만 바꿔도 방 전체가 밝고 정돈돼 보여요.', url:'https://www.ikea.com/us/en/p/aengslilja-duvet-cover-and-pillowcase-s-white-00318541/'}, '흰 침구 $167', [bx0+2.5, 2.5, (bz0+bz1)/2]);
+box(bedding, bx0+0.15, L-1.6, 1.6, 1.82, bz0-0.1, bz1+0.1, M.duvetAfter); box(bedding, bx0+0.15, bx0+1.4, 1.82, 1.85, bz0-0.1, bz1+0.1, mat('#e9e2d4'));
+const okl = newItem('okl', {name:'ÖKENSAND 플로어 램프', tag:'new', price:'$89.99', step:'1단계 조명', why:'소파 옆 낮은 빛이에요. 저녁엔 천장 팬 등을 끄고 이 램프와 침대 램프만 켜요.', url:'https://www.ikea.com/us/en/p/oekensand-floor-lamp-beech-white-90541536/'}, '플로어 램프 $90', [L-SD-0.6, 5.6, W-0.7]);
+{ const ox = L-SD-0.6, oz = W-0.7;
+  [0,1,2].forEach(i=>{ const a=i*Math.PI*2/3; const leg = cyl(okl, ox+Math.cos(a)*0.35, 2.2, oz+Math.sin(a)*0.35, 0.04, 0.04, 4.5, M.beech); leg.rotation.z = Math.cos(a)*0.08; leg.rotation.x = -Math.sin(a)*0.08; });
+  const sh = cyl(okl, ox, 4.7, oz, 0.55, 0.7, 0.8, mat('#fbf6ec', {e:0xffc98a}), 28); sh.userData.glow = true;
+  const pl = new THREE.PointLight(0xffb469, 0, 12, 1.6); pl.position.set(ox, 4.6, oz); okl.add(pl); pl.userData.warm = 5.0; }
+function curtainPanel(g, x0, x1, z, rotY=Math.PI, h=7.45) {
+  const w = x1-x0; const geo = new THREE.PlaneGeometry(w, h, 40, 1); const pos = geo.attributes.position;
   for (let i=0;i<pos.count;i++){ const x = pos.getX(i); pos.setZ(i, Math.sin((x/w)*Math.PI*10)*0.12); }
   geo.computeVertexNormals();
   const m = new THREE.Mesh(geo, mat('#f6f1e7', {side:THREE.DoubleSide, r:1}));
-  m.position.set((x0+x1)/2, h/2+0.1, W-0.35); m.rotation.y = Math.PI; m.castShadow = true; g.add(m);
+  m.position.set((x0+x1)/2, h/2+0.1, z); m.rotation.y = rotY; m.castShadow = true; g.add(m); return m;
 }
-const cur = newItem('cur', {name:'DYTÅG 흰 리넨 커튼 1쌍', tag:'new', price:'$99.99', priceNote:'11/24 회원가 $79.99는 끝났고 지금 가격 $99.99', size:'57″×98″ 2장', step:'5단계', why:'봉을 천장 가까이, 창보다 양옆으로 넓게 걸면 창이 커 보이고 호텔 방처럼 보여요. 98″ 길이라 천장 높이(약 8ft) 근처에 걸면 바닥까지 닿아요.', url:'https://www.ikea.com/us/en/p/dytag-curtains-1-pair-white-with-heading-tape-00466715/'}, '커튼 $100', [8.0, 6.6, W-0.6]);
-cyl(cur, 11.75, 7.65, W-0.3, 0.04, 0.04, 9.6, M.black).rotation.z = Math.PI/2;
-curtainPanel(cur, 6.9, 8.9); curtainPanel(cur, 14.6, 16.6);
-
-// bulbs (ceiling) label only
+const cur = newItem('cur', {name:'DYTÅG 흰 리넨 커튼 1쌍', tag:'new', price:'$99.99', priceNote:'11/24 회원가 $79.99는 끝났고 지금 가격 $99.99', size:'57″×98″ 2장', step:'5단계', why:'봉을 천장 가까이, 창보다 양옆으로 넓게 걸면 창이 커 보이고 호텔 방처럼 보여요. 98″ 길이라 천장(약 8ft) 근처에 걸면 바닥까지 닿아요.', url:'https://www.ikea.com/us/en/p/dytag-curtains-1-pair-white-with-heading-tape-00466715/'}, '커튼 $100', [8.0, 6.6, W-0.6], wallsG);
+{ const rod = cyl(cur, 11.75, 7.65, W-0.3, 0.04, 0.04, 9.6, M.black); rod.rotation.z = Math.PI/2; }
+curtainPanel(cur, 6.9, 8.9, W-0.35); curtainPanel(cur, 14.6, 16.6, W-0.35);
 const bulbs = newItem('bulbs', {name:'2700K 전구 전부 교체', tag:'new', price:'약 $30 (추정)', priceNote:'전구 개수를 아직 몰라서 추정', step:'1단계 조명 (가장 먼저)', why:'램프를 사도 전구색이 섞이면 호텔 느낌이 안 나요. 집 전구를 2700K 한 종류로 통일하는 걸 제일 먼저 해요. 천장 팬 등도 2700K로 바꾸고 저녁엔 꺼요.'}, null);
-box(bulbs, 9.2, 9.8, H-1.08, H-0.98, 7.95, 8.55, mat('#fff1dc', {e:0xffc98a, ei:0.2}));
-
-// recliner (separate budget)
 const rec = item({name:'리클라이너 (별도 예산)', tag:'sep', price:'$499 (ARNÄSVALL) / $399 (GRYTERYD)', size:'펼치면 약 5~6ft', step:'$1,000 밖', why:'창가에 두고 방 가운데를 보게 그렸어요. 점선 상자는 등받이를 끝까지 젖혔을 때 차지하는 자리예요(추정). 사기 전에 이 자리를 줄자로 확인해요.', url:'https://www.ikea.com/us/en/p/arnaesvall-recliner-rocker-and-swivel-armchair-hakebo-gray-green-90614071/'}, 'after');
-addLabel(rec, '리클라이너 (별도)', [11.6, 4.2, W-2.0], '');
-const rx0 = 10.4, rx1 = 12.9, rz0 = W-3.3, rz1 = W-0.6;
-box(rec, rx0, rx1, 0.3, 1.5, rz0, rz1, M.greenGray);
-box(rec, rx0, rx1, 1.5, 3.4, rz1-0.7, rz1, M.greenGray);
-box(rec, rx0, rx0+0.45, 1.5, 2.3, rz0, rz1, M.greenGray); box(rec, rx1-0.45, rx1, 1.5, 2.3, rz0, rz1, M.greenGray);
-cyl(rec, (rx0+rx1)/2, 0.15, (rz0+rz1)/2, 0.9, 1.0, 0.3, M.black);
-const foot = new THREE.Mesh(new THREE.PlaneGeometry(rx1-rx0, 2.4), new THREE.MeshBasicMaterial({color:0x6a7f9a, transparent:true, opacity:0.18}));
-foot.rotation.x = -Math.PI/2; foot.position.set((rx0+rx1)/2, 0.02, rz0-1.2); rec.add(foot);
-const edges = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(rx1-rx0, 0.01, 2.4)), new THREE.LineDashedMaterial({color:0x4a5f7a, dashSize:0.3, gapSize:0.2}));
-edges.position.set((rx0+rx1)/2, 0.03, rz0-1.2); edges.computeLineDistances(); rec.add(edges);
+addLabel(rec, '리클라이너 (별도)', [11.6, 4.2, W-2.0]);
+{ const rx0 = 10.4, rx1 = 12.9, rz0 = W-3.3, rz1 = W-0.6;
+  box(rec, rx0, rx1, 0.3, 1.5, rz0, rz1, M.greenGray); box(rec, rx0, rx1, 1.5, 3.4, rz1-0.7, rz1, M.greenGray);
+  box(rec, rx0, rx0+0.45, 1.5, 2.3, rz0, rz1, M.greenGray); box(rec, rx1-0.45, rx1, 1.5, 2.3, rz0, rz1, M.greenGray);
+  cyl(rec, (rx0+rx1)/2, 0.15, (rz0+rz1)/2, 0.9, 1.0, 0.3, M.black);
+  const foot = new THREE.Mesh(new THREE.PlaneGeometry(rx1-rx0, 2.4), new THREE.MeshBasicMaterial({color:0x6a7f9a, transparent:true, opacity:0.18}));
+  foot.rotation.x = -Math.PI/2; foot.position.set((rx0+rx1)/2, 0.02, rz0-1.2); rec.add(foot); }
 
-// dimension labels (both)
-const dimG = item(null,'both');
-addLabel(dimG, '약 19ft (추정)', [L/2, 0.1, -1.2], 'dim');
-addLabel(dimG, '약 16.5ft (추정)', [-1.2, 0.1, W/2], 'dim');
-addLabel(dimG, '주방 쪽 →', [L+1.6, 0.4, 1.25], 'dim');
-addLabel(dimG, '현관문', [3.0, 7.2, W+0.3], 'dim');
+// ---------- VESTIBULE + HALL ----------
+const vJunk = item({name:'통로 바닥 물건 (상자, 물, 운동 밴드, 바퀴 카트 위)', tag:'rm', price:'$0', why:'0단계, 비우기예요. 물과 상자는 카트 아래 칸이나 주방 수납장으로, 운동 밴드는 옷장 안 바구니로 옮겨요. 큰 방에서 통로 입구로 바로 보이는 자리라 효과가 커요.'}, 'now');
+box(vJunk, 20.4, 21.2, 0, 0.9, GZ0+0.1, GZ0+0.8, M.white); box(vJunk, 21.3, 22.3, 0, 0.8, GZ0+0.1, GZ0+0.9, mat('#9fc3d6',{t:true,op:0.8}));
+box(vJunk, 20.0, 20.8, 0, 0.12, GZ0+1.2, GZ0+1.6, mat('#7b4fa0'));
+addLabel(vJunk, '치울 것', [21.3, 1.4, GZ0+0.6], 'rm');
+const cart = item({name:'바퀴 카트 (지금 것)', tag:'keep', price:'지금 것', why:'그대로 둬요. 위에 쌓인 것만 정리해요.'});
+[0.4,1.4,2.4].forEach(y=>box(cart, 22.9, 23.7, y, y+0.08, GZ0+0.1, GZ0+1.2, M.black)); box(cart, 22.9, 22.95, 0, 2.6, GZ0+0.1, GZ0+0.15, M.black);
+const vChair = item({name:'검정 나무 의자 (지금 것)', tag:'keep', price:'지금 것', why:'그대로 둬요.'});
+box(vChair, 19.6, 20.9, 1.45, 1.6, -1.4, -0.1, M.black); box(vChair, 19.6, 19.7, 1.6, 3.6, -1.4, -0.1, M.black);
+const hJunk = item({name:'복도 빨래 바구니, 운동 기구', tag:'rm', price:'$0', why:'빨래 바구니 2개와 운동 기구가 복도 바닥에 나와 있어요. 바구니는 옷장 안 바닥으로, 운동 기구는 침대 밑(SLATTUM 밑 공간)으로 옮기면 복도가 비어요.'}, 'now');
+cyl(hJunk, 22.6, 0.9, 9.6, 0.65, 0.6, 1.8, mat('#f2f2f2',{t:true,op:0.85})); cyl(hJunk, 21.4, 0.9, 10.0, 0.65, 0.6, 1.8, mat('#f2f2f2',{t:true,op:0.85}));
+box(hJunk, 23.1, 23.8, 0, 2.3, 6.5, 7.1, M.black); box(hJunk, 22.9, 23.8, 0, 0.6, 7.8, 9.1, mat('#b0322b'));
+addLabel(hJunk, '치울 것', [22.2, 2.4, 9.5], 'rm');
+// mirrored sliding closet on hall end (z=11)
+const closet = item({name:'거울 미닫이 옷장 (지금 것)', tag:'keep', price:'지금 것', why:'그대로 둬요. 바닥에 나와 있는 옷과 가방을 안으로 넣어 문이 닫히게 해요. 거울 문이 닫혀 있으면 복도가 넓어 보여요.'}, 'both', wallsG);
+box(closet, 19.45, 21.6, 0, 6.8, 11.0, 11.1, M.mirror); box(closet, 21.6, 23.75, 0, 6.8, 11.12, 11.22, M.mirror);
+box(closet, 19.4, 23.8, 6.8, 6.95, 11.0, 11.25, M.steel);
+const clothes = item(null,'both');
+box(clothes, 19.6, 23.6, 5.9, 5.95, 12.2, 12.3, M.steel);
+for (let i=0;i<14;i++) box(clothes, 19.7+i*0.28, 19.9+i*0.28, 2.8+((i*37)%5)*0.25, 5.9, 11.9, 12.8, mat(['#e8e4dc','#3b3f46','#a89f91','#5c6b7a','#d9d2c4'][i%5]));
+const closetJunk = item(null,'now'); box(closetJunk, 19.6, 22.4, 0, 0.9, 11.4, 13.1, mat('#6b6f74'));
+
+// ---------- KITCHEN ----------
+const kit = item({name:'주방 (지금 것)', tag:'keep', price:'$0', why:'일자형 주방이에요. 왼쪽에 냉장고, 조리대, 가스레인지와 전자레인지, 끝에 창과 벽 에어컨, 오른쪽에 개수대예요. 이번 $1,000 계획에서 주방은 바꾸지 않고, 조리대 위 물건만 정리해요. 전구는 2700K로 같이 바꿔요.'});
+box(kit, XE+T+0.1, XE+T+2.85, 0, 5.8, GZ0, GZ0+2.4, M.steel);                                      // fridge
+box(kit, XE+T+2.85, KX1-2.6, 0, 3.0, GZ0, GZ0+2.0, M.cabinet); box(kit, XE+T+2.85, KX1-2.6, 3.0, 3.12, GZ0, GZ0+2.05, M.marble);
+box(kit, KX1-2.6, KX1-0.1, 0, 3.05, GZ0, GZ0+2.1, mat('#c7cacd',{r:0.3,m:0.6})); box(kit, KX1-2.55, KX1-0.15, 3.05, 3.12, GZ0+0.1, GZ0+2.0, M.black); // range
+const kitUp = item(null,'both', wallsG);
+box(kitUp, KX1-2.6, KX1-0.1, 5.0, 6.4, GZ0, GZ0+1.3, mat('#3b3d40',{r:0.4,m:0.5}));                    // microwave
+box(kitUp, XE+T+2.85, KX1-2.6, 4.6, 7.4, GZ0, GZ0+1.1, M.cabinet);                                     // upper cabinets south
+box(kit, XE+T+0.3, KX1-0.1, 0, 3.0, GZ1-2.0, GZ1, M.cabinet); box(kit, XE+T+0.3, KX1-0.1, 3.0, 3.12, GZ1-2.05, GZ1, M.marble); // north counter
+box(kit, 28.6, 30.4, 2.9, 3.13, GZ1-1.7, GZ1-0.5, M.steel);                                         // sink
+box(kitUp, XE+T+0.3, KX1-0.1, 4.6, 7.4, GZ1-1.1, GZ1, M.cabinet);                                      // upper cabinets north
+cyl(kit, XE+T+0.55, 1.1, GZ1-2.4, 0.4, 0.38, 2.2, M.steel);                                          // trash can
+const kJunk = item(null,'now'); box(kJunk, 30.6, 32.2, 3.12, 3.6, GZ1-1.8, GZ1-0.4, mat('#f0f0f0')); box(kJunk, 26.0, 27.0, 3.12, 3.9, GZ0+0.4, GZ0+1.2, mat('#2d2d2d'));
+const kNeat = item({name:'조리대 정리', tag:'new', price:'$0', step:'0단계', why:'건조대와 자잘한 물건을 수납장 안으로 넣고, 매일 쓰는 커피 머신만 남겨요. 돈 안 드는 정리예요.'}, 'after');
+box(kNeat, 26.2, 26.9, 3.12, 4.0, GZ0+0.4, GZ0+1.1, mat('#2d2d2d'));
+
+// ---------- BATH ----------
+const bathKeep = item({name:'화장실 (지금 것)', tag:'keep', price:'지금 것', why:'욕조와 타일 벽, 세면대와 LED 거울, 변기, 창이 있어요. 렌트라 고정된 것은 그대로 두고 손에 닿는 것만 바꿔요.'});
+box(bathKeep, XE+T+0.15, BX1-0.05, 0, 1.65, BZ0, BZ0+2.5, M.white);                                // tub
+box(bathKeep, XE+T+0.3, BX1-0.2, 0.9, 1.6, BZ0+0.15, BZ0+2.35, mat('#e9eef0',{r:0.2}));
+const bathUp = item(null,'both', wallsG);
+box(bathUp, XE+T, BX1, 1.65, 7.0, BZ0, BZ0+0.06, M.tile);                                         // tile wall
+box(bathUp, BX1-0.06, BX1, 1.65, 7.0, BZ0, BZ0+2.5, M.tile);
+box(bathKeep, 24.6, 26.6, 0, 2.7, BZ1-1.7, BZ1, M.cabinet); box(bathKeep, 24.55, 26.65, 2.7, 2.85, BZ1-1.75, BZ1, M.marble);
+cyl(bathKeep, 25.6, 2.86, BZ1-0.85, 0.5, 0.45, 0.06, M.white);
+box(bathUp, 24.9, 26.3, 3.9, 6.5, BZ1-0.05, BZ1, mat('#dfe6ea',{r:0.05,m:0.9,e:0xffffff,ei:0.15}));    // LED mirror
+box(bathKeep, 27.4, 28.9, 0, 1.4, BZ1-2.3, BZ1-0.8, M.white); box(bathKeep, 27.4, 28.9, 1.4, 2.8, BZ1-0.8, BZ1-0.1, M.white); // toilet
+box(bathKeep, 26.8, 28.6, 0, 0.03, 7.0, 8.4, mat('#3b3b3b'));                                       // mat
+box(bathUp, XE+T+0.15, BX1-0.05, 6.6, 6.65, BZ0+2.45, BZ0+2.5, M.steel);                           // shower rod
+const bJunk = item({name:'세면대 위 세제·스프레이·병', tag:'rm', price:'$0', why:'세면대 위에 매일 안 쓰는 병과 세제를 수납장 안으로 넣어요. 매일 쓰는 것만 트레이에 올려요.'}, 'now');
+for (let i=0;i<5;i++) cyl(bJunk, 24.8+i*0.4, 3.15, BZ1-0.3, 0.1, 0.12, 0.6, mat(['#f4d000','#c0392b','#ffffff','#2d6cdf','#f4d000'][i]));
+addLabel(bJunk, '치울 것', [25.6, 4.0, BZ1-0.5], 'rm');
+const bCur = newItem('bcur', {name:'천 샤워 커튼', tag:'new', price:'약 $35 (추정)', step:'화장실', why:'렌트 화장실에서 가장 큰 천이 샤워 커튼이라 이것부터 바꾸는 게 효과가 제일 커요. 봉을 최대한 높이 달아요.'}, '샤워 커튼 약 $35', [26.9, 6.9, BZ0+2.5], wallsG);
+curtainPanel(bCur, XE+T+0.2, XE+T+2.0, BZ0+2.45, 0, 6.5); 
+const disp = newItem('disp', {name:'벽에 붙이는 펌프통 3개 + Alice + Co 샤워 세트', tag:'new', price:'$45 + $53.20', priceNote:'샤워 세트는 나중에 사도 됨', step:'화장실', why:'어제 방 샤워실처럼 샴푸, 컨디셔너, 바디워시를 벽 펌프통에 담아요. 구멍을 뚫지 않고 붙이는 형태예요.'}, '펌프통 $45', [27.0, 5.2, BZ0+0.2], wallsG);
+[26.4, 27.0, 27.6].forEach(x=>{ box(disp, x-0.2, x+0.2, 4.3, 5.0, BZ0+0.07, BZ0+0.3, M.white); });
+const towels = newItem('towels', {name:'VÅGSJÖN 흰 수건 (목욕 4 + 손 2)', tag:'new', price:'$41.94', priceNote:'$7.99×4 + $4.99×2', step:'화장실', why:'호텔은 같은 흰 수건을 같은 모양으로 접어 둬요. 수건만 통일해도 화장실이 정돈돼 보여요.', url:'https://www.ikea.com/us/en/p/vagsjoen-bath-towel-white-80350985/'}, '흰 수건 $42', [BX1-0.3, 5.0, 10.0], wallsG);
+box(towels, BX1-0.12, BX1-0.04, 4.4, 4.45, 9.3, 10.7, M.steel);
+box(towels, BX1-0.25, BX1-0.1, 2.9, 4.45, 9.4, 10.0, M.white); box(towels, BX1-0.25, BX1-0.1, 2.9, 4.45, 10.05, 10.65, M.white);
+const tray = newItem('tray', {name:'TAVELÅN 트레이', tag:'new', price:'$13.99', step:'화장실', why:'세면대 위에 매일 쓰는 것만 트레이에 올려요. 나머지는 수납장 안으로 넣어요.', url:'https://www.ikea.com/us/en/p/tavelan-tray-50465756/'}, '트레이 $14', [24.95, 3.6, BZ1-0.4]);
+box(tray, 24.7, 25.3, 2.86, 2.92, BZ1-0.6, BZ1-0.15, mat('#b9a98f')); cyl(tray, 24.85, 3.05, BZ1-0.35, 0.06, 0.06, 0.28, M.white); cyl(tray, 25.1, 3.0, BZ1-0.4, 0.05, 0.05, 0.2, mat('#d9c7a6'));
+
+const bathSum = item({name:'화장실 세트 (샤워 커튼, 펌프통, 샤워 세트, 흰 수건, 트레이)', tag:'new', price:'약 $189', step:'화장실', why:'렌트라 타일은 그대로 두고 손에 닿는 것만 바꿔요. 걸어 보기의 "화장실"에서 물건별로 눌러 보면 가격이 나와요.'}, 'after');
+addLabel(bathSum, '화장실 세트 약 $189', [27.0, 3.2, 7.2], 'new', 'iso');
+// ---------- room labels (top view) ----------
+const roomG = item(null,'both');
+addLabel(roomG, '큰 방 약 19×17ft', [6.5, 0.2, 9.5], 'dim', 'iso');
+addLabel(roomG, '주방', [28.5, 0.2, 1.6], 'dim', 'iso');
+addLabel(roomG, '화장실', [27.0, 0.2, 8.4], 'dim', 'iso');
+addLabel(roomG, '복도', [21.6, 0.2, 6.0], 'dim', 'iso');
+addLabel(roomG, '옷장', [21.6, 0.2, 12.4], 'dim', 'iso');
+addLabel(roomG, '현관문', [3.0, 3.6, W+0.4], 'dim', 'iso');
+
+// ---------- ceiling + fan (walk view only) ----------
+const ceilG = new THREE.Group(); scene.add(ceilG);
+function ceil(x0,x1,z0,z1){ const c = new THREE.Mesh(new THREE.PlaneGeometry(x1-x0, z1-z0), mat('#f6f2ea', {side:THREE.DoubleSide})); c.rotation.x = Math.PI/2; c.position.set((x0+x1)/2, H, (z0+z1)/2); ceilG.add(c); }
+ceil(-T, KX1+T, GZ0-T, W+T);
+const fan = new THREE.Group(); ceilG.add(fan);
+cyl(fan, 9.5, H-0.4, 8.5, 0.06, 0.06, 0.8, M.darkGray);
+const fanLight = cyl(fan, 9.5, H-0.9, 8.5, 0.45, 0.35, 0.3, mat('#ffffff', {e:0xffffff}));
+for (let i=0;i<5;i++){ const b = new THREE.Mesh(new THREE.BoxGeometry(2.0,0.04,0.45), M.darkGray); const a = i*Math.PI*2/5; b.position.set(9.5+Math.cos(a)*1.25, H-0.78, 8.5+Math.sin(a)*1.25); b.rotation.y = -a; fan.add(b); }
 
 // ---------- lights ----------
 const hemi = new THREE.HemisphereLight(0xffffff, 0xd8cbb8, 1.0); scene.add(hemi);
-const sun = new THREE.DirectionalLight(0xffffff, 0.6); sun.position.set(-8, 20, 30); sun.castShadow = true;
-sun.shadow.mapSize.set(1024,1024); Object.assign(sun.shadow.camera, {left:-15,right:15,top:15,bottom:-15,near:1,far:80}); sun.target.position.set(L/2,0,W/2); scene.add(sun, sun.target);
-const fanPoint = new THREE.PointLight(0xf4f6ff, 0, 30, 1.2); fanPoint.position.set(9.5, H-1.1, 8.25); scene.add(fanPoint);
+const sun = new THREE.DirectionalLight(0xffffff, 0.6); sun.position.set(-8, 30, 30); sun.castShadow = true;
+sun.shadow.mapSize.set(2048,2048); Object.assign(sun.shadow.camera, {left:-25,right:25,top:25,bottom:-25,near:1,far:120}); sun.target.position.set(16,0,7); scene.add(sun, sun.target);
+const fanPoint = new THREE.PointLight(0xf4f6ff, 0, 30, 1.2); fanPoint.position.set(9.5, H-1.1, 8.5); scene.add(fanPoint);
+const roomLights = [[21.6,4.5],[28.5,1.6],[27,8.4]].map(([x,z])=>{ const p = new THREE.PointLight(0xfff4e6, 0, 14, 1.4); p.position.set(x, H-0.6, z); p.userData.room = true; scene.add(p); return p; });
 
 function applyState() {
   scene.traverse(o => { if (o.userData && o.userData.when) o.visible = (o.userData.when === 'both' || o.userData.when === STATE); });
   const after = STATE === 'after';
   hemi.color.set(after ? 0xffe2c0 : 0xf2f5ff); hemi.groundColor.set(after ? 0xbfa587 : 0xd8d8d8);
-  hemi.intensity = after ? 0.95 : 1.15;
-  sun.intensity = after ? 0.25 : 0.55;
-  fanPoint.intensity = after ? 0 : 22;
-  fanLight.material.emissiveIntensity = after ? 0 : 1.2;
-  renderer.toneMappingExposure = after ? 1.05 : 1.0;
-  scene.traverse(o => {
-    if (o.isPointLight && o.userData.warm) o.intensity = after ? o.userData.warm * 3 : 0;
-    if (o.isMesh && o.userData.glow) o.material.emissiveIntensity = after ? 0.9 : 0;
-  });
-  blinds.visible = true;
+  hemi.intensity = after ? 0.95 : 1.15; sun.intensity = after ? 0.3 : 0.55;
+  fanPoint.intensity = after ? 0 : 22; fanLight.material.emissiveIntensity = after ? 0 : 1.2;
+  roomLights.forEach(p => { p.color.set(after ? 0xffc98a : 0xf4f6ff); p.intensity = VIEW === 'walk' ? 10 : 0; });
+  scene.traverse(o => { if (o.isPointLight && o.userData.warm) o.intensity = after ? o.userData.warm * 3 : 0; if (o.isMesh && o.userData.glow) o.material.emissiveIntensity = after ? 0.9 : 0; });
   document.querySelectorAll('#tgState button').forEach(b => b.classList.toggle('on', b.dataset.v === STATE));
   closeSheet();
 }
@@ -419,30 +444,33 @@ function applyState() {
 const SPOTS = [
   {p:[1.6, 5.2, 8.8], t:[L, 3.6, 8.0]},
   {p:[6.6, 5.0, 4.6], t:[6.6, 3.4, 0]},
-  {p:[L-3.2, 4.0, 13.2], t:[2, 2.6, 5.0]},
-  {p:[L-3.5, 4.3, 6.2], t:[9, 2.8, W]},
+  {p:[L-3.6, 4.0, 13.2], t:[2, 2.6, 5.0]},
+  {p:[L-3.9, 4.3, 6.4], t:[9, 2.8, W]},
+  {p:[XE+T+0.6, 5.2, 1.4], t:[KX1, 3.6, 1.6]},
+  {p:[21.6, 5.2, -0.8], t:[21.6, 3.4, 11]},
+  {p:[XE+T+0.5, 5.2, 9.4], t:[BX1, 3.2, 8.6]},
 ];
 let spot = 0;
+function fitIso() {
+  const t = new THREE.Vector3(15.5, 0, 7.5);
+  const vf = camera.fov*Math.PI/180, hf = 2*Math.atan(Math.tan(vf/2)*camera.aspect);
+  const dist = 18.5 / Math.sin(Math.min(vf, hf)/2);
+  const dir = new THREE.Vector3(-0.55, 1.5, 0.75).normalize();
+  camera.position.copy(t).add(dir.multiplyScalar(dist)); controls.target.copy(t);
+}
 function setView(v) {
   VIEW = v;
   document.querySelectorAll('#tgView button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
   document.getElementById('spots').style.display = v === 'walk' ? 'flex' : 'none';
-  ceiling.visible = v === 'walk'; fan.visible = v === 'walk'; corrWalls.visible = v === 'walk';
+  ceilG.visible = v === 'walk';
+  wallsG.scale.y = v === 'walk' ? 1 : 0.42;
   if (v === 'iso') {
-    camera.fov = 42; fitIso();
-    controls.enableZoom = true; controls.enablePan = true; controls.minDistance = 8; controls.maxDistance = 60;
+    camera.fov = 42; camera.updateProjectionMatrix(); fitIso();
+    controls.enableZoom = true; controls.enablePan = true; controls.minDistance = 6; controls.maxDistance = 120;
     controls.maxPolarAngle = Math.PI/2.15; controls.rotateSpeed = 0.8;
-  } else {
-    camera.fov = 70; goSpot(spot);
-  }
-  camera.updateProjectionMatrix(); controls.update();
-}
-function fitIso() {
-  const t = new THREE.Vector3(L/2, 1.5, W/2);
-  const vf = camera.fov*Math.PI/180, hf = 2*Math.atan(Math.tan(vf/2)*camera.aspect);
-  const dist = 12.5 / Math.sin(Math.min(vf, hf)/2);
-  const dir = new THREE.Vector3(-0.75, 1.25, -0.85).normalize();
-  camera.position.copy(t).add(dir.multiplyScalar(dist)); controls.target.copy(t);
+  } else { camera.fov = 70; camera.updateProjectionMatrix(); goSpot(spot); }
+  roomLights.forEach(p => p.intensity = v === 'walk' ? 10 : 0);
+  controls.update(); closeSheet();
 }
 function goSpot(i) {
   spot = i; const s = SPOTS[i];
@@ -451,8 +479,7 @@ function goSpot(i) {
   const dir = new THREE.Vector3(...s.t).sub(camera.position).normalize();
   controls.target.copy(camera.position).add(dir.multiplyScalar(0.05));
   controls.enableZoom = false; controls.enablePan = false; controls.minDistance = 0; controls.maxDistance = 0.1;
-  controls.maxPolarAngle = Math.PI*0.85; controls.rotateSpeed = -0.35;
-  controls.update();
+  controls.maxPolarAngle = Math.PI*0.85; controls.rotateSpeed = -0.35; controls.update();
 }
 
 // ---------- picking + sheet ----------
@@ -476,27 +503,25 @@ canvas.addEventListener('pointerup', e => {
   const r = canvas.getBoundingClientRect();
   ndc.set(((e.clientX-r.left)/r.width)*2-1, -((e.clientY-r.top)/r.height)*2+1);
   ray.setFromCamera(ndc, camera);
-  const vis = clickables.filter(g => g.visible);
+  const vis = clickables.filter(g => { let o=g; while(o){ if(!o.visible) return false; o=o.parent; } return true; });
   const hits = ray.intersectObjects(vis, true);
   for (const h of hits) { let o = h.object; while (o && !(o.userData && o.userData.info)) o = o.parent; if (o) { showInfo(o.userData.info); return; } }
   closeSheet();
 });
-
-// ---------- UI ----------
 document.querySelectorAll('#tgState button').forEach(b => b.onclick = () => { STATE = b.dataset.v; applyState(); });
 document.querySelectorAll('#tgView button').forEach(b => b.onclick = () => setView(b.dataset.v));
 document.querySelectorAll('#spots button').forEach(b => b.onclick = () => goSpot(+b.dataset.v));
 
 // ---------- list ----------
 const LIST = [
-  {step:'0단계 · 비우기와 자리 바꾸기', items:[['바닥 상자·가방·쇼핑백 치우기, 신발 선반 정리, 커피테이블 비우기', '$0', '바닥에 테이프로 새 책상 길이(78¾″) 표시해 보기']]},
-  {step:'1단계 · 조명', items:[['2700K 전구로 통일', '약 $30', '개수 몰라서 추정'],['HALGATT 테이블 램프 흰색 ×2', '$99.98', '$49.99×2, 침대 양옆','lamps'],['ÖKENSAND 플로어 램프', '$89.99', '소파 옆','okl']]},
+  {step:'0단계 · 비우기와 자리 바꾸기', items:[['큰 방 바닥 상자·가방, 통로 상자·물, 복도 빨래 바구니·운동 기구, 세면대 위 병 치우기', '$0', '바닥에 테이프로 새 책상 길이(78¾″)도 표시해 보기']]},
+  {step:'1단계 · 조명', items:[['2700K 전구로 통일', '약 $30', '개수 몰라서 추정','bulbs'],['HALGATT 테이블 램프 흰색 ×2', '$99.98', '$49.99×2, 침대 양옆','lamps'],['ÖKENSAND 플로어 램프', '$89.99', '소파 옆','okl']]},
   {step:'2단계 · 긴 책상', items:[['LAGKAPTEN 상판 200cm 블랙브라운 + OLOV 다리 ×4', '$129.99', '$79.99 + $12.50×4','desk']]},
   {step:'3단계 · 흰 침구', items:[['Marriott 이불 속통 + ÄNGSLILJA 커버(퀸)', '$166.74', '$126.75(11/24 할인가, 다시 확인) + $39.99','bedding']]},
   {step:'4단계 · 협탁', items:[['UGGLERUM 협탁 (침대 왼쪽)', '$99.99', '자리가 빠듯해 보여서 줄자 확인 먼저','ugg']]},
   {step:'5단계 · 커튼', items:[['DYTÅG 흰 리넨 커튼 1쌍', '$99.99', '11/24 회원가 $79.99는 끝남','cur']]},
   {step:'6단계 · 향', items:[['Alice + Co 리드 디퓨저 + 필로우 스프레이', '$44.10', '$27.30 + $16.80, 11/24 30% 할인가 기준']]},
-  {step:'화장실', items:[['천 샤워 커튼', '약 $35', '추정'],['벽에 붙이는 펌프통 3개', '$45', ''],['Alice + Co 샤워 세트', '$53.20', '나중에 사도 됨'],['VÅGSJÖN 흰 목욕 수건 ×4 + 손수건 ×2', '$41.94', '$7.99×4 + $4.99×2'],['TAVELÅN 트레이', '$13.99', '세면대 위 매일 쓰는 것만']]},
+  {step:'화장실', items:[['천 샤워 커튼', '약 $35', '추정','bcur'],['벽에 붙이는 펌프통 3개', '$45', '','disp'],['Alice + Co 샤워 세트', '$53.20', '나중에 사도 됨','disp'],['VÅGSJÖN 흰 목욕 수건 ×4 + 손수건 ×2', '$41.94', '$7.99×4 + $4.99×2','towels'],['TAVELÅN 트레이', '$13.99', '세면대 위 매일 쓰는 것만','tray']]},
 ];
 const toNum = s => { const m = String(s).match(/[\d.]+/); return m ? parseFloat(m[0]) : 0; };
 let html = '', total = 0;
@@ -506,35 +531,40 @@ html += `<div class="muted" style="margin-top:4px">$1,000에서 약 $${(1000-tot
 html += `<div class="step" style="margin-top:12px">$1,000 밖 · 리클라이너</div><div class="row" data-k="rec"><div class="n">IKEA ARNÄSVALL (흔들림·회전) / GRYTERYD<small>펼친 길이 자리부터 확인</small></div><div class="pr">$499 / $399</div></div>`;
 document.getElementById('list').innerHTML = html;
 const keyMap = {...P, rec};
-document.querySelectorAll('.row[data-k]').forEach(r => r.onclick = () => { const g = keyMap[r.dataset.k]; if (!g) return; STATE='after'; applyState(); showInfo(g.userData.info); stage.scrollIntoView({behavior:'smooth', block:'center'}); });
+const SPOT_OF = {bcur:6, disp:6, towels:6, tray:6};
+document.querySelectorAll('.row[data-k]').forEach(r => r.onclick = () => { const g = keyMap[r.dataset.k]; if (!g) return; STATE='after'; applyState(); if (SPOT_OF[r.dataset.k] !== undefined) { setView('walk'); goSpot(SPOT_OF[r.dataset.k]); } showInfo(g.userData.info); stage.scrollIntoView({behavior:'smooth', block:'center'}); });
 
 document.getElementById('findings').innerHTML = [
+  '침대(SLATTUM 퀸 61⅜″)와 소파(KLIPPAN 70⅞″)를 공식 치수로 더하니 침대 벽이 약 17ft예요.',
   '침대 왼쪽은 주방 쪽 통로 입구, 벽 난방 그릴과 붙어 있어서 새 협탁 자리가 빠듯해 보여요. 줄자로 침대 왼쪽 벽 폭을 먼저 재요.',
-  '긴 책상(78¾″)은 신발 선반 끝부터 놓아도 들어가는 걸로 보여요. 테이프로 바닥에 길이를 먼저 표시해 봐요.',
+  '큰 방 통로 입구로 들어가면 정면이 주방, 왼쪽 벽에 화이트보드, 오른쪽이 복도예요. 복도 끝에 거울 옷장, 그 옆이 화장실이에요(영상 순서로 짐작).',
+  '통로와 복도 바닥 물건(상자, 물, 빨래 바구니, 운동 기구)이 큰 방에서 바로 보이는 자리라 0단계 효과가 커요.',
   '리클라이너는 창가가 가장 넓은 빈 자리예요. 펼치면 커피테이블 쪽으로 약 2ft 더 나와요(추정).',
   'TV는 아직 크기와 위치를 몰라서 모델에 넣지 않았어요.',
 ].map(t=>`<li>${t}</li>`).join('');
 
 // ---------- loop ----------
-function resize(){ const r = stage.getBoundingClientRect(); renderer.setSize(r.width, r.height, false); camera.aspect = r.width/r.height; camera.updateProjectionMatrix(); if (VIEW==='iso' && camera.aspect) { fitIso(); controls.update(); } }
+function resize(){ const r = stage.getBoundingClientRect(); renderer.setSize(r.width, r.height, false); camera.aspect = r.width/r.height; camera.updateProjectionMatrix(); if (VIEW==='iso') { fitIso(); controls.update(); } }
 window.addEventListener('resize', resize);
-const tmp = new THREE.Vector3();
+const tmp = new THREE.Vector3(); const occ = new THREE.Raycaster();
 function tick(){
-  controls.update();
-  // cutaway walls in iso view
-  walls.forEach(w => {
-    const behind = VIEW === 'iso' && tmp.copy(camera.position).sub(w.center).dot(w.inward) < 0;
-    w.m.transparent = behind; w.m.opacity = behind ? 0.1 : 1; w.m.depthWrite = !behind;
-  });
-  renderer.render(scene, camera);
+  controls.update(); renderer.render(scene, camera);
   const r = canvas.getBoundingClientRect();
   labeled.forEach(l => {
-    const vis = l.group.visible && (VIEW === 'iso' || l.el.classList.contains('new') || l.el.classList.contains('rm'));
+    let vis = true; let o = l.group; while (o) { if (!o.visible) { vis = false; break; } o = o.parent; }
+    if (l.mode === 'iso' && VIEW !== 'iso') vis = false;
+    if (l.mode === 'walk' && VIEW !== 'walk') vis = false;
+    if (VIEW === 'walk' && !(l.el.classList.contains('new') || l.el.classList.contains('rm'))) vis = false;
     if (!vis) { l.el.style.display = 'none'; return; }
-    tmp.copy(l.pos).project(camera);
+    tmp.copy(l.pos); if (l.group.parent === wallsG || l.group === wallsG) tmp.y *= wallsG.scale.y;
+    if (VIEW === 'walk') {
+      const d = tmp.clone().sub(camera.position); const dist = d.length();
+      occ.set(camera.position, d.normalize()); occ.far = dist - 0.6;
+      if (occ.far > 0 && occ.intersectObject(wallsG, true).length) { l.el.style.display = 'none'; return; }
+    }
+    tmp.project(camera);
     if (tmp.z > 1 || tmp.z < -1) { l.el.style.display = 'none'; return; }
-    l.el.style.display = 'block';
-    l.el.style.left = ((tmp.x+1)/2*r.width) + 'px'; l.el.style.top = ((1-tmp.y)/2*r.height) + 'px';
+    l.el.style.display = 'block'; l.el.style.left = ((tmp.x+1)/2*r.width) + 'px'; l.el.style.top = ((1-tmp.y)/2*r.height) + 'px';
   });
   requestAnimationFrame(tick);
 }
